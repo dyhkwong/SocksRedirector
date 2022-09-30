@@ -1,0 +1,10 @@
+*.filters
+*.user
+*.sln
+.vs/
+*.exe
+/nfregdrv/Debug/
+/nfregdrv/Release/
+/src/Debug/
+/src/Release/
+/bin/Debug/
