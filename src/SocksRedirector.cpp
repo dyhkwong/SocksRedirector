@@ -26,10 +26,13 @@ DBGLogger DBGLogger::dbgLog;
 typedef std::vector<std::string> tStrings;
 
 unsigned char	g_proxyAddress[NF_MAX_ADDRESS_LENGTH];
+unsigned char	g_dnsAddress[NF_MAX_ADDRESS_LENGTH];
 tStrings	g_processNamesAllow;
 tStrings	g_processNamesFilter;
 std::string g_userName;
 std::string g_userPassword;
+
+bool redirectDns;
 
 inline bool safe_iswhitespace(int c) { return (c == (int) ' ' || c == (int) '\t' || c == (int) '\r' || c == (int) '\n'); }
 
@@ -141,6 +144,251 @@ bool checkProcessNameInFilter(DWORD processId)
 
 	return false;
 }
+
+struct DNS_REQUEST
+{
+	DNS_REQUEST(ENDPOINT_ID id, const unsigned char * remoteAddress, const char * buf, int len, PNF_UDP_OPTIONS options)
+	{
+		m_id = id;
+
+		memcpy(m_remoteAddress, remoteAddress, NF_MAX_ADDRESS_LENGTH);
+
+		if (buf)
+		{
+			m_buf = new char[len];
+			memcpy(m_buf, buf, len);
+			m_len = len;
+		} else
+		{
+			m_buf = NULL;
+			len = 0;
+		}
+
+		if (options)
+		{
+			m_options = (PNF_UDP_OPTIONS)new char[sizeof(NF_UDP_OPTIONS) + options->optionsLength];
+			memcpy(m_options, options, sizeof(NF_UDP_OPTIONS) + options->optionsLength - 1);
+		} else
+		{
+			m_options = NULL;
+		}
+	}
+
+	~DNS_REQUEST()
+	{
+		if (m_buf)
+			delete[] m_buf;
+		if (m_options)
+			delete[] m_options;
+	}
+
+	ENDPOINT_ID m_id;
+	unsigned char m_remoteAddress[NF_MAX_ADDRESS_LENGTH];
+	char * m_buf;
+	int m_len;
+	PNF_UDP_OPTIONS m_options;
+};
+
+class DnsResolver
+{
+public:
+	DnsResolver()
+	{
+		m_stopEvent.Attach(CreateEvent(NULL, TRUE, FALSE, NULL));
+	}
+
+	~DnsResolver()
+	{
+		free();
+	}
+
+	bool init(int threadCount)
+	{
+		HANDLE hThread;
+		unsigned threadId;
+		int i;
+
+		ResetEvent(m_stopEvent);
+
+		if (threadCount <= 0)
+		{
+			SYSTEM_INFO sysinfo;
+			GetSystemInfo( &sysinfo );
+
+			threadCount = sysinfo.dwNumberOfProcessors;
+			if (threadCount == 0)
+			{
+				threadCount = 1;
+			}
+		}
+
+		for (i=0; i<threadCount; i++)
+		{
+			hThread = (HANDLE)_beginthreadex(0, 0,
+						 _threadProc,
+						 (LPVOID)this,
+						 0,
+						 &threadId);
+
+			if (hThread != 0 && hThread != (HANDLE)(-1L))
+			{
+				m_threads.push_back(hThread);
+			}
+		}
+
+		return true;
+	}
+
+	void free()
+	{
+		SetEvent(m_stopEvent);
+
+		for (tThreads::iterator it = m_threads.begin();
+			it != m_threads.end();
+			it++)
+		{
+			WaitForSingleObject(*it, INFINITE);
+			CloseHandle(*it);
+		}
+
+		m_threads.clear();
+
+		while (!m_dnsRequestQueue.empty())
+		{
+			DNS_REQUEST * p = m_dnsRequestQueue.front();
+			delete p;
+			m_dnsRequestQueue.pop();
+		}
+	}
+
+	void addRequest(DNS_REQUEST * pRequest)
+	{
+		AutoLock lock(m_cs);
+		m_dnsRequestQueue.push(pRequest);
+		SetEvent(m_jobAvailableEvent);
+	}
+
+protected:
+
+	void handleRequest(DNS_REQUEST * pRequest, SOCKET s)
+	{
+		int len;
+		int size = (((sockaddr*)g_dnsAddress)->sa_family == AF_INET6)? sizeof(sockaddr_in6) : sizeof(sockaddr_in);
+
+		printf("DnsResolver::handleRequest() id=%I64u\n", pRequest->m_id);
+
+		len = sendto(s, pRequest->m_buf, pRequest->m_len, 0, (sockaddr*)&g_dnsAddress, size);
+		if (len != SOCKET_ERROR)
+		{
+			fd_set fdr, fde;
+			timeval tv;
+
+			FD_ZERO(&fdr);
+			FD_SET(s, &fdr);
+			FD_ZERO(&fde);
+			FD_SET(s, &fde);
+
+			tv.tv_sec = 2;
+			tv.tv_usec = 0;
+
+			len = select(1, &fdr, NULL, &fde, &tv);
+			if (len != SOCKET_ERROR)
+			{
+				if (FD_ISSET(s, &fdr))
+				{
+					char result[1024];
+					int fromLen;
+
+					fromLen = size;
+					len = recvfrom(s, result, (int)sizeof(result), 0, (sockaddr*)&g_dnsAddress, &fromLen);
+					if (len != SOCKET_ERROR)
+					{
+						nf_udpPostReceive(pRequest->m_id,
+							pRequest->m_remoteAddress,
+							result,
+							len,
+							pRequest->m_options);
+
+						printf("DnsResolver::handleRequest() id=%I64u succeeded, len=%d\n", pRequest->m_id, len);
+					} else
+					{
+						printf("DnsResolver::handleRequest() id=%I64u recvfrom error=%d\n", pRequest->m_id, GetLastError());
+					}
+				} else
+				{
+					printf("DnsResolver::handleRequest() id=%I64u no data\n", pRequest->m_id);
+				}
+			} else
+			{
+				printf("DnsResolver::handleRequest() id=%I64u select error=%d\n", pRequest->m_id, GetLastError());
+			}
+		} else
+		{
+			printf("DnsResolver::handleRequest() id=%I64u sendto error=%d\n", pRequest->m_id, GetLastError());
+		}
+
+	}
+
+	void threadProc()
+	{
+		HANDLE handles[] = { m_jobAvailableEvent, m_stopEvent };
+		DNS_REQUEST * pRequest;
+
+		SOCKET s;
+
+		s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+		if (s == INVALID_SOCKET)
+			return;
+
+		for (;;)
+		{
+			DWORD res = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+
+			if (res == (WAIT_OBJECT_0+1))
+				break;
+
+			for (;;)
+			{
+				{
+					AutoLock lock(m_cs);
+					if (m_dnsRequestQueue.empty())
+					{
+						break;
+					}
+
+					pRequest = m_dnsRequestQueue.front();
+					m_dnsRequestQueue.pop();
+				}
+
+				handleRequest(pRequest, s);
+
+				delete pRequest;
+			}
+		}
+
+		closesocket(s);
+	}
+
+	static unsigned WINAPI _threadProc(void* pData)
+	{
+		(reinterpret_cast<DnsResolver*>(pData))->threadProc();
+		return 0;
+	}
+
+private:
+	typedef std::vector<HANDLE> tThreads;
+	tThreads m_threads;
+
+	typedef std::queue<DNS_REQUEST*> tDnsRequestQueue;
+	tDnsRequestQueue m_dnsRequestQueue;
+
+	AutoEventHandle m_jobAvailableEvent;
+	AutoHandle m_stopEvent;
+
+	AutoCriticalSection m_cs;
+};
+
+DnsResolver g_dnsResolver;
 
 // Forward declarations
 void printAddrInfo(bool created, ENDPOINT_ID id, PNF_UDP_CONN_INFO pConnInfo);
@@ -486,6 +734,14 @@ public:
 		printf("udpSend id=%I64u len=%d remoteAddress=%s\n", id, len, remoteAddr);
 //		fflush(stdout);
 
+		if (redirectDns)
+		{
+			if ((((sockaddr*)remoteAddress)->sa_family == AF_INET6) ? ((sockaddr_in6*)remoteAddress)->sin6_port == htons(53) : ((sockaddr_in*)remoteAddress)->sin_port == htons(53))
+			{
+				g_dnsResolver.addRequest(new DNS_REQUEST(id, remoteAddress, buf, len, options));
+				return;
+			}
+		}
 
 		{
 			AutoLock lock(m_cs);
@@ -527,10 +783,11 @@ public:
 
 void usage()
 {
-	printf("Usage: SocksRedirector.exe -r IP:port [-g \"<process names>\"] [-p \"<process names>\"] [-user <proxy user name>] [-password <proxy user password>]\n" \
+	printf("Usage: SocksRedirector.exe -r IP:port [-g \"<process names>\"] [-p \"<process names>\"] [-user <proxy user name>] [-password <proxy user password>]  [-dns IP:port]\n" \
 		"IP:port : tunnel TCP/UDP traffic via SOCKS proxy using specified IP:port\n" \
 		"-g <process names> : (global mode, prior to process mode) redirect the traffic except for those of the specified processes (it is possible to specify multiple names divided by ',')\n" \
 		"-p <process names> : (process mode) redirect the traffic of the specified processes (it is possible to specify multiple names divided by ',')\n" \
+		"-dns : hijack DNS requests and redirect to specified specified IP:port\n" \
 		);
 	exit(0);
 }
@@ -619,12 +876,35 @@ int main(int argc, char* argv[])
 
 			printf("User password: %s\n", argv[i+1]);
 		} else
+		if (stricmp(argv[i], "-dns") == 0)
+		{
+			redirectDns = true;
+			int err, addrLen;
+
+			addrLen = sizeof(g_dnsAddress);
+			err = WSAStringToAddress(argv[i+1], AF_INET, NULL, (LPSOCKADDR)&g_dnsAddress, &addrLen);
+			if (err < 0)
+			{
+				addrLen = sizeof(g_dnsAddress);
+				err = WSAStringToAddress(argv[i+1], AF_INET6, NULL, (LPSOCKADDR)&g_dnsAddress, &addrLen);
+				if (err < 0)
+				{
+					printf("WSAStringToAddress failed, err=%d", WSAGetLastError());
+					usage();
+				}
+			}
+
+			printf("Redirect DNS to: %s\n", argv[i+1]);
+		}
+		else
 		{
 			usage();
 		}
 	}
 
 	printf("Press enter to stop...\n\n");
+
+	g_dnsResolver.init(10);
 
 	if (!eh.init())
 	{
@@ -697,6 +977,8 @@ int main(int argc, char* argv[])
 
 	// Free the library
 	nf_free();
+
+	g_dnsResolver.free();
 
 	eh.free();
 
