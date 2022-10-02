@@ -10,6 +10,7 @@
 #include <queue>
 #include "nfapi.h"
 #include "sync.h"
+#include "icmp.h"
 #include "UdpProxy.h"
 #include "TcpProxy.h"
 #include "utf8.h"
@@ -33,6 +34,7 @@ std::string g_userName;
 std::string g_userPassword;
 
 bool redirectDns;
+bool replyIcmp;
 
 inline bool safe_iswhitespace(int c) { return (c == (int) ' ' || c == (int) '\t' || c == (int) '\r' || c == (int) '\n'); }
 
@@ -389,6 +391,8 @@ private:
 };
 
 DnsResolver g_dnsResolver;
+
+IPEventHandler ipEventHandler;
 
 // Forward declarations
 void printAddrInfo(bool created, ENDPOINT_ID id, PNF_UDP_CONN_INFO pConnInfo);
@@ -788,6 +792,7 @@ void usage()
 		"-g <process names> : (global mode, prior to process mode) redirect the traffic except for those of the specified processes (it is possible to specify multiple names divided by ',')\n" \
 		"-p <process names> : (process mode) redirect the traffic of the specified processes (it is possible to specify multiple names divided by ',')\n" \
 		"-dns : hijack DNS requests and redirect to specified specified IP:port\n" \
+		"-icmp <ms>: reply ICMP locally after specified millisecond(s)\n" \
 		);
 	exit(0);
 }
@@ -895,6 +900,16 @@ int main(int argc, char* argv[])
 			}
 
 			printf("Redirect DNS to: %s\n", argv[i+1]);
+		} else
+		if (stricmp(argv[i], "-icmp") == 0)
+		{
+			replyIcmp = true;
+			delay = atoi(argv[i + 1]);
+			if (delay < 0)
+			{
+				printf("Invalid ICMP delay millisecond: %s\n", argv[i+1]);
+				usage();
+			}
 		}
 		else
 		{
@@ -938,6 +953,23 @@ int main(int argc, char* argv[])
 	rule.ip_family = AF_INET6;
 	stringToIPv6("0:0:0:0:0:ffff:7f00:001", (char*)rule.remoteIpAddress);
 	nf_addRule(&rule, FALSE);
+
+	// reply icmp locally
+	if (replyIcmp)
+	{
+		nf_setIPEventHandler(&ipEventHandler);
+		memset(&rule, 0, sizeof(rule));
+		rule.protocol = IPPROTO_ICMP;
+		rule.direction = NF_D_OUT;
+		rule.filteringFlag = NF_FILTER_AS_IP_PACKETS;
+		nf_addRule(&rule, FALSE);
+
+		memset(&rule, 0, sizeof(NF_RULE));
+		rule.protocol = IPPROTO_ICMPV6;
+		rule.direction = NF_D_OUT;
+		rule.filteringFlag = NF_FILTER_AS_IP_PACKETS;
+		nf_addRule(&rule, FALSE);
+	}
 
 	// Bypass processes
 	for (size_t i = 0; i < g_processNamesAllow.size(); i++)
