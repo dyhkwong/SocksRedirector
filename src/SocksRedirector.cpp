@@ -26,7 +26,8 @@ DBGLogger DBGLogger::dbgLog;
 typedef std::vector<std::string> tStrings;
 
 unsigned char	g_proxyAddress[NF_MAX_ADDRESS_LENGTH];
-tStrings	g_processNames;
+tStrings	g_processNamesAllow;
+tStrings	g_processNamesFilter;
 std::string g_userName;
 std::string g_userPassword;
 
@@ -105,18 +106,36 @@ static std::string getProcessName(DWORD processId)
     return encodeUTF8(fullProcessName);
 }
 
-bool checkProcessName(DWORD processId)
+bool checkProcessNameInAllow(DWORD processId)
 {
 	std::string processName = getProcessName(processId);
 
 	size_t processNameLen = processName.length();
 
-	for (size_t i=0; i<g_processNames.size(); i++)
+	for (size_t i=0; i<g_processNamesAllow.size(); i++)
 	{
-		if (g_processNames[i].length() > processNameLen)
+		if (g_processNamesAllow[i].length() > processNameLen)
 			continue;
 
-		if (stricmp(g_processNames[i].c_str(), processName.c_str() + processNameLen - g_processNames[i].length()) == 0)
+		if (stricmp(g_processNamesAllow[i].c_str(), processName.c_str() + processNameLen - g_processNamesAllow[i].length()) == 0)
+			return true;
+	}
+
+	return false;
+}
+
+bool checkProcessNameInFilter(DWORD processId)
+{
+	std::string processName = getProcessName(processId);
+
+	size_t processNameLen = processName.length();
+
+	for (size_t i=0; i<g_processNamesFilter.size(); i++)
+	{
+		if (g_processNamesFilter[i].length() > processNameLen)
+			continue;
+
+		if (stricmp(g_processNamesFilter[i].c_str(), processName.c_str() + processNameLen - g_processNamesFilter[i].length()) == 0)
 			return true;
 	}
 
@@ -277,11 +296,20 @@ public:
 			return;
 		}
 
-		if (g_processNames.size() > 0)
+		if (g_processNamesAllow.size() > 0)
 		{
-			if (!checkProcessName(pConnInfo->processId))
+			if (checkProcessNameInAllow(pConnInfo->processId))
 			{
-				printf("tcpConnectRequest id=%I64u bypass wrong process\n", id);
+				printf("tcpConnectRequest id=%I64u bypass process\n", id);
+				return;
+			}
+		}
+
+		if (g_processNamesFilter.size() > 0)
+		{
+			if (!checkProcessNameInFilter(pConnInfo->processId))
+			{
+				printf("tcpConnectRequest id=%I64u bypass process\n", id);
 				return;
 			}
 		}
@@ -379,18 +407,24 @@ public:
 		printAddrInfo(true, id, pConnInfo);
 		fflush(stdout);
 
-		if (g_processNames.size() > 0)
+		if (g_processNamesAllow.size() > 0)
 		{
-			if (checkProcessName(pConnInfo->processId))
+			if (checkProcessNameInAllow(pConnInfo->processId))
 			{
-				AutoLock lock(m_cs);
-				m_filteredUdpIds.insert(id);
+				printf("udpCreated id=%I64u bypass process\n", id);
+				return;
 			}
-		} else
-		{
-			AutoLock lock(m_cs);
-			m_filteredUdpIds.insert(id);
 		}
+		if (g_processNamesFilter.size() > 0)
+		{
+			if (!checkProcessNameInFilter(pConnInfo->processId))
+			{
+				printf("udpCreated id=%I64u bypass process\n", id);
+				return;
+			}
+		}
+		AutoLock lock(m_cs);
+		m_filteredUdpIds.insert(id);
 	}
 
 	virtual void udpConnectRequest(ENDPOINT_ID id, PNF_UDP_CONN_REQUEST pConnReq)
@@ -493,9 +527,10 @@ public:
 
 void usage()
 {
-	printf("Usage: SocksRedirector.exe -r IP:port [-p \"<process names>\"] [-user <proxy user name>] [-password <proxy user password>]\n" \
+	printf("Usage: SocksRedirector.exe -r IP:port [-g \"<process names>\"] [-p \"<process names>\"] [-user <proxy user name>] [-password <proxy user password>]\n" \
 		"IP:port : tunnel TCP/UDP traffic via SOCKS proxy using specified IP:port\n" \
-		"<process names> : redirect the traffic of the specified processes (it is possible to specify multiple names divided by ',')\n" \
+		"-g <process names> : (global mode, prior to process mode) redirect the traffic except for those of the specified processes (it is possible to specify multiple names divided by ',')\n" \
+		"-p <process names> : (process mode) redirect the traffic of the specified processes (it is possible to specify multiple names divided by ',')\n" \
 		);
 	exit(0);
 }
@@ -521,6 +556,7 @@ int main(int argc, char* argv[])
 {
 	EventHandler eh;
 	NF_RULE rule;
+	NF_RULE_EX ruleEx;
 	WSADATA wsaData;
 
 	// This call is required for WSAAddressToString
@@ -561,11 +597,15 @@ int main(int argc, char* argv[])
 
 			printf("Redirect to: %s\n", argv[i+1]);
 		} else
+		if (stricmp(argv[i], "-g") == 0)
+		{
+			parseValue(argv[i+1], g_processNamesAllow);
+			printf("(Global mode) bypass process name(s): %s\n", argv[i+1]);
+		} else
 		if (stricmp(argv[i], "-p") == 0)
 		{
-			parseValue(argv[i+1], g_processNames);
-
-			printf("Process name(s): %s\n", argv[i+1]);
+			parseValue(argv[i+1], g_processNamesFilter);
+			printf("(Process mode) proxy process name(s): %s\n", argv[i+1]);
 		} else
 		if (stricmp(argv[i], "-user") == 0)
 		{
@@ -618,6 +658,26 @@ int main(int argc, char* argv[])
 	rule.ip_family = AF_INET6;
 	stringToIPv6("0:0:0:0:0:ffff:7f00:001", (char*)rule.remoteIpAddress);
 	nf_addRule(&rule, FALSE);
+
+	// Bypass processes
+	for (size_t i = 0; i < g_processNamesAllow.size(); i++)
+	{
+		memset(&ruleEx, 0, sizeof(ruleEx));
+		ruleEx.filteringFlag = NF_ALLOW;
+		const wchar_t *p = std::wstring(g_processNamesAllow[i].begin(), g_processNamesAllow[i].end()).c_str();
+		wcsncpy((wchar_t*)ruleEx.processName, p, MAX_PATH);
+		nf_addRuleEx(&ruleEx, FALSE);
+	}
+
+	// Filter processes
+	for (size_t i = 0; i < g_processNamesFilter.size(); i++)
+	{
+		memset(&ruleEx, 0, sizeof(ruleEx));
+		ruleEx.filteringFlag = NF_FILTER;
+		const wchar_t *p = std::wstring(g_processNamesFilter[i].begin(), g_processNamesFilter[i].end()).c_str();
+		wcsncpy((wchar_t*)ruleEx.processName, p, MAX_PATH);
+		nf_addRuleEx(&ruleEx, FALSE);
+	}
 
 	// Filter UDP packets
 	memset(&rule, 0, sizeof(rule));
