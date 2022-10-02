@@ -610,22 +610,25 @@ int main(int argc, char* argv[])
 	memset(&rule, 0, sizeof(rule));
 	rule.filteringFlag = NF_ALLOW;
 	rule.ip_family = AF_INET6;
+	stringToIPv6("::1", (char*)rule.remoteIpAddress);
+	nf_addRule(&rule, FALSE);
+
+	memset(&rule, 0, sizeof(rule));
+	rule.filteringFlag = NF_ALLOW;
+	rule.ip_family = AF_INET6;
 	stringToIPv6("0:0:0:0:0:ffff:7f00:001", (char*)rule.remoteIpAddress);
 	nf_addRule(&rule, FALSE);
 
 	// Filter UDP packets
 	memset(&rule, 0, sizeof(rule));
-//	rule.ip_family = AF_INET;
 	rule.protocol = IPPROTO_UDP;
 	rule.filteringFlag = NF_FILTER;
 	nf_addRule(&rule, FALSE);
 
 	// Filter TCP connect requests
 	memset(&rule, 0, sizeof(rule));
-//	rule.ip_family = AF_INET;
 	rule.protocol = IPPROTO_TCP;
 	rule.direction = NF_D_OUT;
-//	rule.remotePort = htons(443);
 	rule.filteringFlag = NF_INDICATE_CONNECT_REQUESTS;
 	nf_addRule(&rule, FALSE);
 
