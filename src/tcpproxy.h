@@ -1031,11 +1031,12 @@ protected:
 
 			psd->closed = true;
 			
-			pov = newOV_DATA();
-			pov->type = OVT_RECEIVE;
-			if (!m_service.postCompletion(socket, 0, &pov->ol))
+			OV_DATA * newpov = newOV_DATA();
+			newpov->id = pov->id;
+			newpov->type = OVT_RECEIVE;
+			if (!m_service.postCompletion(socket, 0, &newpov->ol))
 			{
-				deleteOV_DATA(pov);
+				deleteOV_DATA(newpov);
 			}
 			return;
 		}
