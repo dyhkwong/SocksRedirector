@@ -81,6 +81,7 @@ typedef enum _NF_FILTERING_FLAG
 	NF_READONLY = 256,				// Don't block the IP packets and indicate them to ipSend/ipReceive only for monitoring
 	NF_CONTROL_FLOW = 512,			// Use the flow limit rules even without NF_FILTER flag
 	NF_REDIRECT = 1024,			// Redirect the outgoing TCP connections to address specified in redirectTo
+	NF_BYPASS_IP_PACKETS = 2048,	// Bypass the traffic as IP packets, when used with NF_FILTER_AS_IP_PACKETS flag
 } NF_FILTERING_FLAG;
 
 #pragma pack(push, 1)
