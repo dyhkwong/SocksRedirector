@@ -18,4 +18,4 @@ All copyrights to NetFilter SDK are exclusively owned by the author - Vitaly Sid
 ## Note
 The pre-built demo driver provided by [Netfilter SDK](https://netfiltersdk.com/) filters no more than 1000000 TCP connections and UDP sockets.
 After exceeding this limit the filtering continues again after system reboot.
-You may [ordering](http://www.netfiltersdk.com/buy_now.html) a license for full version or source code.
+You may [order](http://www.netfiltersdk.com/buy_now.html) a license for full version or source code.

@@ -451,6 +451,12 @@ public:
 		DWORD dwBytes, dwFlags;
 		WSABUF bufs;
 
+		AutoLock lock(m_cs);
+
+		tSocketMap::iterator it = m_socketMap.find(id);
+		if (it == m_socketMap.end())
+		   return false;
+
 		if (pov == NULL)
 		{
 			pov = newOV_DATA();
