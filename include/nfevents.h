@@ -36,7 +36,7 @@ typedef enum _NF_STATUS
 
 	namespace nfapi
 	{
-		#include "nfdriver.h"
+		#include "nfdriver_data.h"
 
 		/**
 		*	Filtering events
@@ -224,7 +224,7 @@ typedef enum _NF_STATUS
 	{
 	#endif
 
-	#include "nfdriver.h"
+	#include "nfdriver_data.h"
 
 	#pragma pack(push, 1)
 

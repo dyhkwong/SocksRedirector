@@ -14,15 +14,13 @@
 #include "UdpProxy.h"
 #include "TcpProxy.h"
 #include "utf8.h"
+#include "samples_config.h"
 
 using namespace nfapi;
 
 #if defined(_DEBUG) || defined(_RELEASE_LOG)
 DBGLogger DBGLogger::dbgLog;
 #endif
-
-// Change this string after renaming and registering the driver under different name
-#define NFDRIVER_NAME "netfilter2"
 
 typedef std::vector<std::string> tStrings;
 

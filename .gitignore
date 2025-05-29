@@ -2,9 +2,7 @@
 *.user
 *.sln
 .vs/
-*.exe
-/nfregdrv/Debug/
-/nfregdrv/Release/
+SocksRedirector.exe
 /src/Debug/
 /src/Release/
 /bin/Debug/
