@@ -48,8 +48,8 @@ typedef enum _NF_FILTERING_FLAG
 #define AF_INET         2               /* internetwork: UDP, TCP, etc. */
 #endif
 
-#ifndef AF_INET6
-#define AF_INET6        23              /* Internetwork Version 6 */
+#if !defined(AF_INET6) && defined(_WIN32)
+#define AF_INET6        23          
 #endif
 
 // Protocols
